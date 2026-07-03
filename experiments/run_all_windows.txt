@@ -1,0 +1,23 @@
+# Windows (PowerShell) 运行实验命令
+# 在 experiments 目录下执行
+
+cd experiments
+
+# 1. 安装依赖（只需运行一次）
+pip install torch torchvision scikit-learn pandas pillow tqdm
+
+# 2. 创建结果目录
+New-Item -ItemType Directory -Force -Path results\vgg16, results\resnet50, results\resnet101, results\vit_b
+
+# 3. 依次运行四个 backbone，训练日志同时打印并保存到各自的 log.txt
+python train.py --backbone vgg16     --epochs 50 2>&1 | Tee-Object -FilePath results\vgg16\log.txt
+python train.py --backbone resnet50  --epochs 50 2>&1 | Tee-Object -FilePath results\resnet50\log.txt
+python train.py --backbone resnet101 --epochs 50 2>&1 | Tee-Object -FilePath results\resnet101\log.txt
+python train.py --backbone vit_b     --epochs 50 2>&1 | Tee-Object -FilePath results\vit_b\log.txt
+
+# 4. 汇总四个 backbone 的结果
+python summarize_results.py
+
+# ------------------------------------------------------------
+# 单独调试某一个 backbone 时，直接运行下面这一行即可（可调整参数）：
+# python train.py --backbone resnet50 --epochs 50 --batch_size 32 --lr 1e-4 --patience 10
