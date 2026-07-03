@@ -81,6 +81,14 @@ def find_last_conv(module):
     return last
 
 
+def disable_inplace_relu(model):
+    # register_full_backward_hook 的输出是一个 view，如果紧跟着 inplace ReLU
+    # 会在这个 view 上直接改内存，触发 RuntimeError，所以推理时统一关掉 inplace
+    for m in model.modules():
+        if isinstance(m, nn.ReLU):
+            m.inplace = False
+
+
 def vit_reshape_transform(tensor):
     # tensor: (B, num_patches+1, hidden_dim) -> 去掉 class token 再还原成网格
     tokens = tensor[:, 1:, :]
@@ -141,8 +149,9 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, img_size = build_model(args.backbone, NUM_LABELS)
     ckpt_path = RESULT_ROOT / args.backbone / "best.pth"
-    model.load_state_dict(torch.load(ckpt_path, map_location=device))
+    model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=True))
     model = model.to(device).eval()
+    disable_inplace_relu(model)
 
     target_layer, reshape_transform = get_target_layer(model, args.backbone)
     cam_engine = GradCAM(model, target_layer, reshape_transform)
