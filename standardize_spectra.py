@@ -112,15 +112,37 @@ def parse_jdx(path: Path):
     return meta, np.array(xs), np.array(ys)
 
 
-def process_nist(path: Path) -> Image.Image | None:
-    meta, x, y = parse_jdx(path)
+VALID_XUNITS = {'1/CM', 'CM-1'}   # 两种写法等价，'CM-1'是少数文件的写法差异
+VALID_YUNITS = {'ABSORBANCE', 'TRANSMITTANCE'}
 
+
+def jdx_axis_valid(meta: dict) -> bool:
+    """XUNITS/YUNITS 是否是我们能处理的物理量，供 process_nist 和账目脚本共用判断逻辑。"""
+    xunits = meta.get('XUNITS', '').upper()
+    yunits = meta.get('YUNITS', '').upper()
+    if xunits not in VALID_XUNITS and xunits != 'MICROMETERS':
+        return False
+    return yunits in VALID_YUNITS
+
+
+def convert_x_to_wavenumber(meta: dict, x: np.ndarray) -> np.ndarray | None:
+    """按 XUNITS 把 x 轴统一转成 cm-1。单位不认识返回 None（调用方应已用 jdx_axis_valid 提前过滤）。"""
     xunits = meta.get('XUNITS', '').upper()
     if xunits == 'MICROMETERS':
-        x = 10000.0 / x
-    elif xunits != '1/CM':
-        return None
+        return 10000.0 / x
+    if xunits in VALID_XUNITS:
+        return x
+    return None
 
+
+def compute_pct_t_and_ylim(meta: dict, y: np.ndarray):
+    """把 y 轴统一转成 %T，并算出这条曲线该用的显示范围 ylim（含气相拉伸逻辑）。
+    返回 (pct_t, ylim)，单位/物理量不认识时返回 (None, None)。
+
+    这个函数是画图（process_nist）和生成数值向量（build_dataset.py）共用的唯一实现，
+    保证两边的"气相拉伸"变换严格一致——图像和数值向量的 y 轴变换必须同源，
+    否则"图像重要区域 vs 数值重要区域对比"这个分析就没有意义了。
+    """
     yunits = meta.get('YUNITS', '').upper()
     if yunits == 'ABSORBANCE':
         # 这部分几乎全是气相(GC-IR)数据。只有当整条曲线都没跌破50%时才算"被压扁"，
@@ -138,7 +160,57 @@ def process_nist(path: Path) -> Image.Image | None:
         pct_t = y * 100.0 if float(meta.get('MAXY', 1)) <= 1.5 else y
         ylim = (0, 100)
     else:
-        return None   # Reflectance / absorption index / dispersion index 等，物理量不同，跳过
+        return None, None   # Reflectance / absorption index / dispersion index 等，物理量不同，跳过
+    return pct_t, ylim
+
+
+# SDBS 原图的X轴不是纯线性的：实测 type1/type2 多个样本，2000 cm-1 处有个折点，
+# 折点以下（指纹区，2000-400）的像素密度是折点以上（2000-4000）的整整2倍
+# （SDBS的historical惯例，指纹区峰密集，故意画得更宽）。NIST重绘图原来用纯线性轴，
+# 和SDBS图在同一个"4000->400, 686x322"画布里其实是两套不同的像素<->波数换算关系。
+# 这里让NIST重绘图也采用同一套分段规则，两种来源的图从此共享一套换算公式；
+# 这是无损操作——NIST是原始数值点，改的只是画在哪个像素，不是重采样丢信息。
+AXIS_BREAK_WN = 2000.0
+
+
+def wavenumber_to_pixel(wn, width=TARGET_SIZE[0]):
+    """波数 -> 像素列（分段线性，4000cm-1在0，400cm-1在width，折点在AXIS_BREAK_WN）。"""
+    scale_high = ((4000.0 - AXIS_BREAK_WN) + 2.0 * (AXIS_BREAK_WN - 400.0)) / width  # cm-1/px，折点以上
+    scale_low = scale_high / 2.0                                                     # cm-1/px，折点以下，密度翻倍
+    break_px = (4000.0 - AXIS_BREAK_WN) / scale_high
+    wn = np.asarray(wn, dtype=float)
+    return np.where(
+        wn >= AXIS_BREAK_WN,
+        (4000.0 - wn) / scale_high,
+        break_px + (AXIS_BREAK_WN - wn) / scale_low,
+    )
+
+
+def pixel_to_wavenumber(px, width=TARGET_SIZE[0]):
+    """wavenumber_to_pixel 的反函数，供 Grad-CAM 等后续分析换算像素位置对应的波数。"""
+    scale_high = ((4000.0 - AXIS_BREAK_WN) + 2.0 * (AXIS_BREAK_WN - 400.0)) / width
+    scale_low = scale_high / 2.0
+    break_px = (4000.0 - AXIS_BREAK_WN) / scale_high
+    px = np.asarray(px, dtype=float)
+    return np.where(
+        px <= break_px,
+        4000.0 - px * scale_high,
+        AXIS_BREAK_WN - (px - break_px) * scale_low,
+    )
+
+
+def process_nist(path: Path) -> Image.Image | None:
+    meta, x, y = parse_jdx(path)
+
+    x = convert_x_to_wavenumber(meta, x)
+    if x is None:
+        return None
+
+    pct_t, ylim = compute_pct_t_and_ylim(meta, y)
+    if pct_t is None:
+        return None
+
+    px = wavenumber_to_pixel(x)
 
     # 坐标轴框如果紧贴画布边缘（add_axes([0,0,1,1])），右/下边框线会被画布裁切掉一半线宽
     # 导致基本看不见，所以渲染时四周多留 PAD 像素余量，存图前再裁掉这圈余量。
@@ -147,8 +219,8 @@ def process_nist(path: Path) -> Image.Image | None:
     render_w, render_h = TARGET_SIZE[0] + 2 * pad, TARGET_SIZE[1] + 2 * pad
     fig = plt.figure(figsize=(render_w / dpi, render_h / dpi), dpi=dpi)
     ax = fig.add_axes([pad / render_w, pad / render_h, TARGET_SIZE[0] / render_w, TARGET_SIZE[1] / render_h])
-    ax.plot(x, pct_t, color='black', linewidth=0.7)
-    ax.set_xlim(4000, 400)
+    ax.plot(px, pct_t, color='black', linewidth=0.7)
+    ax.set_xlim(0, TARGET_SIZE[0])
     ax.set_ylim(*ylim)
     ax.set_xticks([])
     ax.set_yticks([])

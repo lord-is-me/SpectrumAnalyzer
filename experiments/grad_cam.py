@@ -27,7 +27,7 @@ import torch.nn.functional as F
 
 from train import (
     build_model, get_transforms, LABEL_COLS, NUM_LABELS,
-    CSV_PATH, IMG_DIR, RESULT_ROOT,
+    CSV_PATH, IMG_DIR, RESULT_ROOT, CHECKPOINT_ROOT,
 )
 
 
@@ -148,7 +148,7 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, img_size = build_model(args.backbone, NUM_LABELS)
-    ckpt_path = RESULT_ROOT / args.backbone / "best.pth"
+    ckpt_path = CHECKPOINT_ROOT / args.backbone / "best.pth"
     model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=True))
     model = model.to(device).eval()
     disable_inplace_relu(model)

@@ -6,7 +6,7 @@
 
 ## 前置条件
 
-必须先训练完对应 backbone，确认 `results/{backbone}/best.pth` 已经生成。Grad-CAM 依赖这个权重文件，不存在会直接报 `FileNotFoundError`。
+必须先训练完对应 backbone，确认 `checkpoints/{backbone}/best.pth` 已经生成。Grad-CAM 依赖这个权重文件，不存在会直接报 `FileNotFoundError`。
 
 ## 1. 安装依赖
 
@@ -54,8 +54,10 @@ results/{backbone}/gradcam/{file_id}.png
 
 ## 4. 把结果传回本地查看
 
+`results/` 和 `checkpoints/` 是分开的：`checkpoints/{backbone}/best.pth` 是模型权重，体积大，留在服务器上不用管；`results/{backbone}/` 下面只有 history.csv、test_result.csv、log.txt、gradcam 图这些轻量文件，直接打包整个 `results/` 传回本地即可，不会带上权重文件。
+
 ```bash
-# 本地机器上执行（从服务器拉图片）
+# 本地机器上执行（从服务器拉图片，不涉及权重文件）
 scp -r lefan@<服务器地址>:~/SpectrumAnalyzer/experiments/results/resnet50/gradcam ./gradcam_resnet50
 ```
 

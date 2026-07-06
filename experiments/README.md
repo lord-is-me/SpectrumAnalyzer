@@ -16,9 +16,13 @@ experiments/
 ├── summarize_results.py  # 汇总所有 backbone 的结果表格
 ├── run_all.sh            # 一键顺序运行全部 backbone
 ├── README.md             # 本文件
-└── results/              # 运行后自动生成
+├── checkpoints/          # 模型权重（体积大），运行后自动生成，留在服务器上，不需要传回本地
+│   ├── vgg16/best.pth
+│   ├── resnet50/best.pth
+│   ├── resnet101/best.pth
+│   └── vit_b/best.pth
+└── results/              # 轻量结果，运行后自动生成，跑完直接打包传回本地
     ├── vgg16/
-    │   ├── best.pth        # 验证集最优权重
     │   ├── history.csv     # 每 epoch 的 loss / val_f1 / val_auc
     │   ├── test_result.csv # 测试集最终指标
     │   └── log.txt         # 训练日志
@@ -27,6 +31,8 @@ experiments/
     ├── vit_b/
     └── comparison.csv    # 四个 backbone 的汇总对比表
 ```
+
+模型权重（`checkpoints/`）和结果（`results/`）分开存放：训练在云端服务器上跑，权重文件没必要传回本地，只需要把整个 `results/` 目录打包传回来就有全部指标和日志；`checkpoints/` 留在服务器上供 Grad-CAM 等后续分析直接读取。
 
 ---
 
@@ -71,10 +77,20 @@ python train.py --backbone resnet50 --epochs 50
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--backbone` | resnet50 | vgg16 / resnet50 / resnet101 / vit_b |
+| `--dataset` | legacy | legacy=StandardizedSpectra随机60/20/20划分；nist_split=NistSdbsSplit固定划分（见docs/nist_fusion_experiment_plan.md） |
+| `--pretrained` | 1 | 1=加载ImageNet预训练权重，0=随机初始化从零训练（预训练vs从零训练消融，只在 `--dataset nist_split` 下有意义） |
 | `--epochs` | 50 | 最大训练轮数 |
 | `--batch_size` | 32 | 批大小 |
 | `--lr` | 1e-4 | 初始学习率 |
 | `--patience` | 10 | 早停耐心值（验证 F1 不提升的 epoch 数） |
+
+`--dataset nist_split` 下，权重和结果分别存到 `checkpoints/{backbone}_pretrained(或_scratch)/` 和 `results/{backbone}_pretrained(或_scratch)/`，和旧的 `--dataset legacy`（存到 `checkpoints/{backbone}/`）互不冲突。
+
+```bash
+# 新数据集：预训练 vs 从零训练消融
+python train.py --dataset nist_split --backbone resnet101 --pretrained 1
+python train.py --dataset nist_split --backbone resnet101 --pretrained 0
+```
 
 ### Step 3：运行全部 backbone
 
