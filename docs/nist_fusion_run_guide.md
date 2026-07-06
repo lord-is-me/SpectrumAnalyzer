@@ -68,7 +68,13 @@ data/NistSdbsSplit/
 cd experiments
 ```
 
-4个backbone × 2种初始化 = 8次训练，每次都要跑：
+4个backbone × 2种初始化 = 8次训练。一键跑全部（Linux服务器）：
+
+```bash
+bash run_nist_split.sh
+```
+
+Windows本地调试用 `run_nist_split_windows.ps1`。两个脚本都是依次跑下面8条命令，日志分别写到各自 `results/{exp}/log.txt`：
 
 ```bash
 python train.py --dataset nist_split --backbone vgg16     --pretrained 1 --epochs 50
@@ -81,7 +87,7 @@ python train.py --dataset nist_split --backbone vit_b     --pretrained 1 --epoch
 python train.py --dataset nist_split --backbone vit_b     --pretrained 0 --epochs 50
 ```
 
-**建议先跑一次短的验证没问题再跑全部**（比如某个backbone `--epochs 1`），确认能正常输出 `val_f1`/`val_auc` 不报错，再放心跑满50轮。
+**建议先跑一次短的验证没问题再跑全部**（比如某个backbone单独跑 `--epochs 1`），确认能正常输出 `val_f1`/`val_auc` 不报错，再用 `run_nist_split.sh` 跑满50轮的全部8组。`run_nist_split.sh` 开头有 `set -e`，中途某个backbone报错会直接停止，不会带着错误继续跑后面几个。
 
 其他可选参数（`--batch_size`、`--lr`、`--patience`）用法和旧的 legacy 数据集一致，见 [experiments/README.md](../experiments/README.md)。
 
