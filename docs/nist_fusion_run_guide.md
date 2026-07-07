@@ -1,6 +1,6 @@
 # NIST/SDBS 融合实验 —— 运行说明
 
-配套设计文档见 [nist_fusion_experiment_plan.md](nist_fusion_experiment_plan.md)。本文档只讲怎么跑，从零开始（新服务器/新checkout）到跑出方法1/2的结果。
+配套设计文档见 [nist_fusion_experiment_plan.md](nist_fusion_experiment_plan.md)。本文档只讲怎么跑，从零开始（新服务器/新checkout）到跑出方法1/2/3的结果。
 
 ---
 
@@ -13,6 +13,7 @@
   data/SDBS/{file_id}.png        # SDBS原图
   data/StandardizedSpectra/      # 已有的标准化图 + all_cleaned.csv
   ```
+
   `data/` 整个目录是 gitignore 掉的，git pull 不会带过来，必须单独传（scp/rsync `data.zip` 再解压）。
 
 ---
@@ -127,7 +128,40 @@ print(pd.DataFrame(rows).to_string(index=False))
 
 ---
 
-## 5. 打包结果传回本地
+## 5. 跑方法3：原始数据+图片融合模型（Phase 3）
+
+图像分支（ResNet50）+ 数值序列分支（RNN/LSTM/GRU/Transformer，深度可选3/7/9层）晚融合，详见 [nist_fusion_experiment_plan.md](nist_fusion_experiment_plan.md) 第4节。
+
+先跑4种架构的3层baseline，建立基线后再决定要不要跑7/9层：
+
+```bash
+cd experiments
+bash run_fusion.sh
+```
+
+等价于依次跑：
+
+```bash
+python train_fusion.py --seq_model rnn         --num_layers 3 --epochs 50
+python train_fusion.py --seq_model lstm        --num_layers 3 --epochs 50
+python train_fusion.py --seq_model gru         --num_layers 3 --epochs 50
+python train_fusion.py --seq_model transformer --num_layers 3 --epochs 50
+```
+
+看哪个架构效果好、值得深挖，再单独加深度：
+
+```bash
+python train_fusion.py --seq_model transformer --num_layers 7
+python train_fusion.py --seq_model transformer --num_layers 9
+```
+
+**关于val/test的评估口径**：val/test没有数值向量（纯SDBS来源），评估时数值分支统一喂"全掩码=0"的占位输入。训练时默认以 `--modality_dropout 0.3` 的概率随机把数值分支置空，让模型提前适应这种"没有数值数据"的场景，评估结果才不会因为遇到训练时没见过的输入模式而失真——这也意味着**测试集分数本质上反映的是模型只靠图像分支时的表现**，不是"双分支输入"下的表现，方案文档3.4节有解释这为什么是数据本身决定的、不是设计缺陷。
+
+结果存放：`checkpoints/fusion_{seq_model}_{num_layers}layer/` + `results/fusion_{seq_model}_{num_layers}layer/`（结构和方法1/2一致）。
+
+---
+
+## 6. 打包结果传回本地
 
 只需要 `results/`，不需要 `checkpoints/`（权重留服务器）：
 
@@ -141,6 +175,7 @@ scp user@server:~/SpectrumAnalyzer/results_nist_split.tar.gz .
 
 ## 常见问题
 
-- **`FileNotFoundError` 找不到 `data/NistSdbsSplit`**：先跑第1、2步，不能跳过直接跑 `train.py --dataset nist_split`。
-- **`--dataset` 忘了指定**：默认是 `legacy`（旧的StandardizedSpectra随机划分），不会报错但跑的不是新数据集，结果目录也不会带 `_pretrained`/`_scratch` 后缀，容易和新实验搞混，记得每次都显式写 `--dataset nist_split`。
+- **`FileNotFoundError` 找不到 `data/NistSdbsSplit`**：先跑第1、2步，不能跳过直接跑 `train.py --dataset nist_split` 或 `train_fusion.py`。
+- **`--dataset` 忘了指定**（方法1/2）：默认是 `legacy`（旧的StandardizedSpectra随机划分），不会报错但跑的不是新数据集，结果目录也不会带 `_pretrained`/`_scratch` 后缀，容易和新实验搞混，记得每次都显式写 `--dataset nist_split`。
 - **8次训练全跑一遍很花时间**：可以先用 `--epochs 5` 左右快速摸底哪个backbone明显不收敛（参考旧baseline里 vit_b 表现最差），再决定要不要给它更多轮数。
+- **方法3的7层/9层模型比3层慢很多、还容易过拟合**：训练集只有2785个样本，深层RNN/Transformer很容易过拟合，先看3层baseline的val_f1曲线是否已经明显震荡/不再提升，再决定加深有没有意义。
