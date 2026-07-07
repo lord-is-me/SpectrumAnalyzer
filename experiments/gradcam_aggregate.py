@@ -121,6 +121,12 @@ def main():
         fusion_model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=True))
         model = ImageOnlyWrapper(fusion_model).to(device).eval()
         disable_inplace_relu(model)
+        if seq_arch in ("rnn", "lstm", "gru"):
+            # cuDNN的RNN/LSTM/GRU反向传播要求模块处于training模式，eval模式下backward会直接报错
+            # "cudnn RNN backward can only be called in training mode"。这里只把序列分支这一个
+            # 模块设回train()，图像分支(ResNet50的BN/Dropout)仍然保持eval，不影响Grad-CAM算出来
+            # 的图像梯度——反正数值分支喂的是占位输入，它内部具体是train还是eval行为无所谓。
+            model.fusion_model.seq_encoder.encoder.train()
         img_size = 224
         # ImageEncoder.features = resnet50.children()[:-1]，只去掉了fc，avgpool还在最后一位，
         # 所以 layer4 是倒数第二个（features[-1]=avgpool，features[-2]=layer4），取它最后一个Bottleneck
