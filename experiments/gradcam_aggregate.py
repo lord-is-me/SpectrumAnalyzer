@@ -6,8 +6,14 @@ Phase 4 (5.1)：按气味标签聚合 Grad-CAM 热力图，找每个气味标签
 现在共用同一套换算公式）重采样到统一的360-bin网格再取平均，得到"这个气味标签平均看哪
 里"的波数敏感曲线。
 
+支持两种数据集来源（根据 --exp 名字自动判断，也可以用 --dataset 强制指定）：
+  - nist_split：exp 名带 _pretrained/_scratch 后缀，读 data/NistSdbsSplit/{split}/labels.csv
+  - legacy    ：exp 就是纯 backbone 名（vgg16/resnet50/resnet101/vit_b），复现 train.py
+                里那个固定 random_state=42 的 60/20/20 随机划分，从 StandardizedSpectra 取图
+
 用法:
-    python gradcam_aggregate.py --exp resnet101_pretrained --min_pos 10
+    python gradcam_aggregate.py --exp resnet101_pretrained --min_pos 10   # nist_split
+    python gradcam_aggregate.py --exp resnet101 --min_pos 10             # legacy
 
 只分析 test 集里正例数 >= --min_pos 的标签，正例太少统计噪声太大，没意义。
 
@@ -21,6 +27,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from PIL import Image
+from sklearn.model_selection import train_test_split
 
 import torch
 
@@ -29,12 +36,13 @@ from standardize_spectra import pixel_to_wavenumber, TARGET_SIZE  # noqa: E402
 
 from train import (  # noqa: E402
     build_model, get_transforms, LABEL_COLS, NUM_LABELS,
-    NIST_SPLIT_ROOT, CHECKPOINT_ROOT, RESULT_ROOT,
+    NIST_SPLIT_ROOT, CHECKPOINT_ROOT, RESULT_ROOT, CSV_PATH, IMG_DIR,
 )
 from grad_cam import GradCAM, get_target_layer, disable_inplace_relu  # noqa: E402
 
 N_BINS = 360
 WN_LOW, WN_HIGH = 400.0, 4000.0
+LEGACY_BACKBONES = ("vgg16", "resnet50", "resnet101", "vit_b")
 
 
 def backbone_name_from_exp(exp_name: str) -> str:
@@ -45,16 +53,35 @@ def backbone_name_from_exp(exp_name: str) -> str:
     raise ValueError(f"无法从实验名解析backbone: {exp_name}")
 
 
+def load_legacy_rows(split: str) -> pd.DataFrame:
+    """复现 train.py::prepare_legacy_datasets 里那个固定 random_state=42 的
+    60/20/20 划分，取出 val 或 test 对应的那部分行（file_id + 118个标签列）。"""
+    df_all = pd.read_csv(CSV_PATH)
+    df_spec = df_all[df_all["spectrum_type"] == 1].copy()
+    df_spec["file_id"] = df_spec.index + 2
+    df_spec = df_spec.reset_index(drop=True)
+
+    all_idx = list(range(len(df_spec)))
+    tmp_idx, test_idx = train_test_split(all_idx, test_size=0.2, random_state=42)
+    train_idx, val_idx = train_test_split(tmp_idx, test_size=0.25, random_state=42)
+    idx = val_idx if split == "val" else test_idx
+    return df_spec.iloc[idx].reset_index(drop=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--exp", type=str, default="resnet101_pretrained",
-                        help="要分析的实验名，对应 checkpoints/{exp}/best.pth")
+                        help="要分析的实验名，对应 checkpoints/{exp}/best.pth；"
+                             "纯backbone名(vgg16/resnet50/resnet101/vit_b)=legacy，带_pretrained/_scratch后缀=nist_split")
+    parser.add_argument("--dataset", type=str, default="auto", choices=["auto", "legacy", "nist_split"],
+                         help="不填就按--exp名字自动判断")
     parser.add_argument("--min_pos", type=int, default=10,
                         help="标签在该split正例数至少要有这么多才纳入分析")
     parser.add_argument("--split", type=str, default="test", choices=["test", "val"])
     args = parser.parse_args()
 
     backbone = backbone_name_from_exp(args.exp)
+    is_legacy = args.dataset == "legacy" or (args.dataset == "auto" and args.exp in LEGACY_BACKBONES)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model, img_size = build_model(backbone, NUM_LABELS, pretrained=False)  # 权重马上被checkpoint整个覆盖
@@ -66,8 +93,21 @@ def main():
     target_layer, reshape_transform = get_target_layer(model, backbone)
     cam_engine = GradCAM(model, target_layer, reshape_transform)
 
-    split_dir = NIST_SPLIT_ROOT / args.split
-    df = pd.read_csv(split_dir / "labels.csv")
+    if is_legacy:
+        print(f"数据集来源: legacy（StandardizedSpectra，随机60/20/20划分，random_state=42）")
+        df = load_legacy_rows(args.split)
+        image_root = IMG_DIR
+
+        def resolve_img_path(row):
+            return image_root / f"{int(row['file_id'])}.png"
+    else:
+        print(f"数据集来源: nist_split（NistSdbsSplit/{args.split}）")
+        split_dir = NIST_SPLIT_ROOT / args.split
+        df = pd.read_csv(split_dir / "labels.csv")
+
+        def resolve_img_path(row):
+            return split_dir / row["image_path"]
+
     transform = get_transforms(img_size, is_train=False)
 
     bin_edges = np.linspace(WN_LOW, WN_HIGH, N_BINS + 1)
@@ -83,7 +123,7 @@ def main():
         label_idx = LABEL_COLS.index(label)
         bin_vals = []
         for _, row in pos_rows.iterrows():
-            img_path = split_dir / row["image_path"]
+            img_path = resolve_img_path(row)
             orig_img = Image.open(img_path).convert("RGB")
             x = transform(orig_img).unsqueeze(0).to(device)
             cam, _prob = cam_engine(x, label_idx)  # cam: [img_size, img_size]，0-1

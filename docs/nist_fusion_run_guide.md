@@ -161,7 +161,36 @@ python train_fusion.py --seq_model transformer --num_layers 9
 
 ---
 
-## 6. 打包结果传回本地
+## 6. Grad-CAM 按气味标签聚合（Phase 4，5.1节）
+
+对方法1/2跑出来的每个模型，把 test 集里每个正例数够多的气味标签的 Grad-CAM 热力图都聚合一遍，换算到统一波数轴上，看每个气味标签平均关注哪个波数区间。
+
+`--exp` 名字自动决定用哪个数据集（也可以用 `--dataset` 强制指定）：
+- `xxx_pretrained` / `xxx_scratch` → nist_split（NistSdbsSplit的固定测试集）
+- 纯backbone名（`vgg16`/`resnet50`/`resnet101`/`vit_b`，没有后缀）→ legacy（StandardizedSpectra，复现 `train.py` 里那个固定 `random_state=42` 的随机测试集）
+
+**跑legacy模型这条之前，记得先做完 [第0节的两步修复](#0-前提)**：`python ../fix_legacy_nist_images.py` 把StandardizedSpectra里533张NIST重绘图换成分段轴版本 + 重新跑一遍 `bash run_all.sh`，不然legacy的Grad-CAM还是建立在坐标轴对不齐的旧图上。
+
+一键跑全部12个模型（8个nist_split + 4个legacy）：
+
+```bash
+cd experiments
+bash run_gradcam_aggregate.sh          # min_pos默认10
+bash run_gradcam_aggregate.sh 8        # 或自己传min_pos
+```
+
+哪个模型的 `checkpoints/{exp}/best.pth` 还没跑出来，会自动跳过，不会中断整个批次。单独跑某一个：
+
+```bash
+python gradcam_aggregate.py --exp resnet101_pretrained --min_pos 10   # nist_split
+python gradcam_aggregate.py --exp resnet101 --min_pos 10              # legacy
+```
+
+结果存在 `results/{exp}/gradcam_aggregate/{split}_label_wavenumber_profile.csv`（行=360个波数bin，列=达标的气味标签）。
+
+---
+
+## 7. 打包结果传回本地
 
 只需要 `results/`，不需要 `checkpoints/`（权重留服务器）：
 
