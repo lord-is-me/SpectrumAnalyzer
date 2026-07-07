@@ -163,15 +163,16 @@ python train_fusion.py --seq_model transformer --num_layers 9
 
 ## 6. Grad-CAM 按气味标签聚合（Phase 4，5.1节）
 
-对方法1/2跑出来的每个模型，把 test 集里每个正例数够多的气味标签的 Grad-CAM 热力图都聚合一遍，换算到统一波数轴上，看每个气味标签平均关注哪个波数区间。
+对方法1/2/3跑出来的每个模型，把 test 集里每个正例数够多的气味标签的 Grad-CAM 热力图都聚合一遍，换算到统一波数轴上，看每个气味标签平均关注哪个波数区间。
 
-`--exp` 名字自动决定用哪个数据集（也可以用 `--dataset` 强制指定）：
-- `xxx_pretrained` / `xxx_scratch` → nist_split（NistSdbsSplit的固定测试集）
-- 纯backbone名（`vgg16`/`resnet50`/`resnet101`/`vit_b`，没有后缀）→ legacy（StandardizedSpectra，复现 `train.py` 里那个固定 `random_state=42` 的随机测试集）
+`--exp` 名字自动决定用哪个模型/数据集（也可以用 `--dataset` 强制指定nist_split/legacy）：
+- `xxx_pretrained` / `xxx_scratch` → 方法1/2，nist_split（NistSdbsSplit的固定测试集）
+- 纯backbone名（`vgg16`/`resnet50`/`resnet101`/`vit_b`，没有后缀）→ 方法1/2的legacy版，StandardizedSpectra，复现 `train.py` 里那个固定 `random_state=42` 的随机测试集
+- `fusion_{seq_model}_{num_layers}layer` → 方法3融合模型，只分析图像分支（数值分支喂"全掩码=0"的占位输入，和这些模型在test集上实际被评估时的输入一致，见 `train_fusion.py` 的模态dropout设计），Grad-CAM hook挂在图像分支里ResNet50的最后一个Bottleneck上
 
 **跑legacy模型这条之前，记得先做完 [第0节的两步修复](#0-前提)**：`python ../fix_legacy_nist_images.py` 把StandardizedSpectra里533张NIST重绘图换成分段轴版本 + 重新跑一遍 `bash run_all.sh`，不然legacy的Grad-CAM还是建立在坐标轴对不齐的旧图上。
 
-一键跑全部12个模型（8个nist_split + 4个legacy）：
+一键跑全部16个模型（8个方法1/2 nist_split + 4个legacy + 4个方法3融合模型）：
 
 ```bash
 cd experiments
@@ -182,8 +183,9 @@ bash run_gradcam_aggregate.sh 8        # 或自己传min_pos
 哪个模型的 `checkpoints/{exp}/best.pth` 还没跑出来，会自动跳过，不会中断整个批次。单独跑某一个：
 
 ```bash
-python gradcam_aggregate.py --exp resnet101_pretrained --min_pos 10   # nist_split
-python gradcam_aggregate.py --exp resnet101 --min_pos 10              # legacy
+python gradcam_aggregate.py --exp resnet101_pretrained --min_pos 10        # 方法1/2 nist_split
+python gradcam_aggregate.py --exp resnet101 --min_pos 10                  # 方法1/2 legacy
+python gradcam_aggregate.py --exp fusion_transformer_3layer --min_pos 10  # 方法3融合模型
 ```
 
 结果存在 `results/{exp}/gradcam_aggregate/{split}_label_wavenumber_profile.csv`（行=360个波数bin，列=达标的气味标签）。
