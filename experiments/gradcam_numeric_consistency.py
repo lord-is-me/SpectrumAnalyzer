@@ -70,39 +70,49 @@ class FusionGradCAMWrapper(nn.Module):
         return self.fusion_model(image, self._values, self._mask)
 
 
-class AttentionCapture:
-    """给 TransformerEncoder 每一层的 self_attn 打补丁，强制返回注意力权重
-    （nn.TransformerEncoderLayer 默认 need_weights=False 走 fast path，拿不到权重）。
-    只在 enabled=True 时生效，避免干扰 Grad-CAM 那次纯前向/反向调用。"""
-    def __init__(self, encoder: nn.TransformerEncoder):
-        self.weights = []
-        self.enabled = False
-        for layer in encoder.layers:
-            self._patch(layer.self_attn)
+def _replay_transformer_layer(layer: nn.TransformerEncoderLayer, x: torch.Tensor,
+                               key_padding_mask: torch.Tensor):
+    """手动重放一层 TransformerEncoderLayer 的计算，显式用 need_weights=True 调用
+    self_attn 拿到真实注意力权重。不能靠给 self_attn.forward 打补丁再调用
+    layer(...)/encoder(...)：eval()+no_grad() 下 TransformerEncoderLayer 会整层走融合的
+    fast path（"BetterTransformer"，torch._transformer_encoder_layer_fwd），根本不会调用
+    子模块的 forward，补丁挂了也不会触发（实测：这样跑出来的注意力矩阵全是0）。这里绕开
+    layer.forward()/TransformerEncoder.forward()，直接调子模块，保证真的算了attention。"""
+    attn = layer.self_attn
+    if layer.norm_first:
+        normed = layer.norm1(x)
+        attn_out, w = attn(normed, normed, normed, key_padding_mask=key_padding_mask,
+                            need_weights=True, average_attn_weights=True)
+        x = x + layer.dropout1(attn_out)
+        ff = layer.linear2(layer.dropout(layer.activation(layer.linear1(layer.norm2(x)))))
+        x = x + layer.dropout2(ff)
+    else:
+        attn_out, w = attn(x, x, x, key_padding_mask=key_padding_mask,
+                            need_weights=True, average_attn_weights=True)
+        x = layer.norm1(x + layer.dropout1(attn_out))
+        ff = layer.linear2(layer.dropout(layer.activation(layer.linear1(x))))
+        x = layer.norm2(x + layer.dropout2(ff))
+    return x, w
 
-    def _patch(self, mha: nn.MultiheadAttention):
-        orig_forward = mha.forward
 
-        def patched(query, key, value, **kwargs):
-            if not self.enabled:
-                return orig_forward(query, key, value, **kwargs)
-            kwargs["need_weights"] = True
-            kwargs["average_attn_weights"] = True
-            out, w = orig_forward(query, key, value, **kwargs)
-            self.weights.append(w.detach())
-            return out, w
+def transformer_attention_importance(seq_encoder: nn.Module, values: torch.Tensor,
+                                      mask: torch.Tensor) -> np.ndarray:
+    """重放 SequenceEncoder(transformer分支) 的前向计算，逐层拿真实注意力权重，
+    跨层、跨query维取平均，得到每个位置(=key，和360个波数bin一一对应)平均被关注的强度。"""
+    with torch.no_grad():
+        x = seq_encoder.input_proj(torch.stack([values, mask], dim=-1))
+        key_padding_mask = (mask == 0)
+        all_masked = key_padding_mask.all(dim=1)
+        if all_masked.any():
+            key_padding_mask = key_padding_mask.clone()
+            key_padding_mask[all_masked] = False
 
-        mha.forward = patched
+        layer_weights = []
+        for layer in seq_encoder.encoder.layers:
+            x, w = _replay_transformer_layer(layer, x, key_padding_mask)
+            layer_weights.append(w)
 
-    def reset(self):
-        self.weights = []
-
-    def collect(self, num_positions: int) -> np.ndarray:
-        """各层 [1, N, N] 注意力矩阵跨层取平均，再对 query 维取平均，得到每个位置
-        （= key）平均被关注的强度，作为该bin对序列表征的重要性近似，长度 num_positions。"""
-        if not self.weights:
-            return np.zeros(num_positions, dtype=np.float32)
-        stacked = torch.stack(self.weights, dim=0)  # [L, 1, N, N]
+        stacked = torch.stack(layer_weights, dim=0)  # [L, 1, N, N]
         avg = stacked.mean(dim=0).squeeze(0)  # [N, N]
         return avg.mean(dim=0).cpu().numpy()  # 对query维平均 -> [N]
 
@@ -161,7 +171,6 @@ def main():
     wrapper = FusionGradCAMWrapper(fusion_model).to(device).eval()
     disable_inplace_relu(wrapper)
 
-    attn_capture = None
     if seq_arch in ("rnn", "lstm", "gru"):
         # cuDNN的RNN/LSTM/GRU反向传播要求模块处于training模式，eval模式下backward会直接报错。
         # 这里只把序列分支这一个模块设回train()；同时把它内部的层间dropout清零，因为这次数值
@@ -169,8 +178,6 @@ def main():
         # 的数值侧重要性——train()只是为了满足cuDNN的backward前提，行为上仍要等价于eval。
         fusion_model.seq_encoder.encoder.train()
         fusion_model.seq_encoder.encoder.dropout = 0.0
-    else:
-        attn_capture = AttentionCapture(fusion_model.seq_encoder.encoder)
 
     # ImageEncoder.features = resnet50.children()[:-1]，只去掉了fc，avgpool还在最后一位，
     # 所以 layer4 是倒数第二个（features[-1]=avgpool，features[-2]=layer4），取它最后一个Bottleneck
@@ -219,12 +226,7 @@ def main():
             img_profile = resample_cam_to_wavenumber(cam, bin_centers)
 
             if seq_arch == "transformer":
-                attn_capture.reset()
-                attn_capture.enabled = True
-                with torch.no_grad():
-                    fusion_model(x, values, mask)
-                attn_capture.enabled = False
-                num_profile = attn_capture.collect(N_BINS)
+                num_profile = transformer_attention_importance(fusion_model.seq_encoder, values, mask)
             else:
                 with torch.no_grad():
                     img_emb = fusion_model.image_encoder(x)
