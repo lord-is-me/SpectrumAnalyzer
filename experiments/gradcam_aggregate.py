@@ -83,6 +83,16 @@ class ImageOnlyWrapper(nn.Module):
         return self.fusion_model(image, values, mask)
 
 
+def resample_cam_to_wavenumber(cam: np.ndarray, bin_centers: np.ndarray) -> np.ndarray:
+    """把二维 Grad-CAM 热力图（每列取最大激活）沿波数轴重采样到 bin_centers 对应的
+    等宽波数网格上。供 gradcam_numeric_consistency.py 复用，两边保持同一套换算逻辑。"""
+    col_importance = cam.max(axis=0)  # 每一列取最大激活 -> [img_size]
+    px_686 = np.linspace(0, TARGET_SIZE[0] - 1, num=len(col_importance))
+    wn = pixel_to_wavenumber(px_686, TARGET_SIZE[0])  # 随 px_686 递增而递减
+    # np.interp 要求 x 递增，wn是递减的，两边一起倒序
+    return np.interp(bin_centers, wn[::-1], col_importance[::-1])
+
+
 def load_legacy_rows(split: str) -> pd.DataFrame:
     """复现 train.py::prepare_legacy_datasets 里那个固定 random_state=42 的
     60/20/20 划分，取出 val 或 test 对应的那部分行（file_id + 118个标签列）。"""
@@ -178,13 +188,7 @@ def main():
             orig_img = Image.open(img_path).convert("RGB")
             x = transform(orig_img).unsqueeze(0).to(device)
             cam, _prob = cam_engine(x, label_idx)  # cam: [img_size, img_size]，0-1
-
-            col_importance = cam.max(axis=0)  # 每一列取最大激活 -> [img_size]
-            px_686 = np.linspace(0, TARGET_SIZE[0] - 1, num=len(col_importance))
-            wn = pixel_to_wavenumber(px_686, TARGET_SIZE[0])  # 随 px_686 递增而递减
-            # np.interp 要求 x 递增，wn是递减的，两边一起倒序
-            resampled = np.interp(bin_centers, wn[::-1], col_importance[::-1])
-            bin_vals.append(resampled)
+            bin_vals.append(resample_cam_to_wavenumber(cam, bin_centers))
 
         profiles[label] = np.mean(bin_vals, axis=0)
         print(f"  {label:15s}  n_pos={len(pos_rows):3d}  完成")

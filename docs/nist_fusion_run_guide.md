@@ -192,7 +192,40 @@ python gradcam_aggregate.py --exp fusion_transformer_3layer --min_pos 10  # 方�
 
 ---
 
-## 7. 打包结果传回本地
+## 7. 图像 vs 数值重要区域一致性（Phase 4，5.2节）
+
+只对方法3的4个融合模型有意义，而且只能用 **train** 集——val/test 里的数值向量是"全掩码=0"的占位输入（没有真实数值数据可分析），train 集里每个 NIST 来源样本才同时有真实图像+真实数值向量。
+
+对每个正例样本同时算两条重要性曲线，换算到同一条400-4000cm⁻¹/360-bin网格上：
+- 图像侧：Grad-CAM（这次数值分支喂真实向量，不是占位输入）
+- 数值侧：Transformer 用 self-attention 权重；RNN/LSTM/GRU 用手写积分梯度（Integrated Gradients）
+
+按标签聚合、算 Pearson/Spearman 相关系数时，只用两边都有真实测量覆盖（`mask==1`）的bin，被掩码标记为缺失的bin会剔除——避免"模型正确地避开了假填充区"被误读成一个化学发现。
+
+一键跑全部4个融合模型：
+
+```bash
+cd experiments
+bash run_gradcam_numeric_consistency.sh          # min_pos=10, ig_steps=20（默认）
+bash run_gradcam_numeric_consistency.sh 8 30      # 或自己传 min_pos / ig_steps
+```
+
+单独跑某一个：
+
+```bash
+python gradcam_numeric_consistency.py --exp fusion_transformer_3layer --min_pos 10
+python gradcam_numeric_consistency.py --exp fusion_lstm_3layer --min_pos 10 --ig_steps 20
+```
+
+正例数多的标签在 RNN/LSTM/GRU 上跑积分梯度比较慢，可以用 `--max_samples_per_label` 给每个标签的样本数封顶（默认0=不限制）。
+
+结果存在 `results/{exp}/gradcam_numeric_consistency/`：
+- `train_label_profiles.csv`：行=360个波数bin，列=每个达标标签的 `{label}__image` / `{label}__numeric` / `{label}__coverage` 三列
+- `train_label_correlation.csv`：行=每个达标标签，列=n_pos/n_valid_bins/pearson_r/pearson_p/spearman_r/spearman_p
+
+---
+
+## 8. 打包结果传回本地
 
 只需要 `results/`，不需要 `checkpoints/`（权重留服务器）：
 

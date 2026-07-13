@@ -222,8 +222,8 @@ Fusion:          concat([image_emb, seq_emb]) → Linear → MultiLabelHead → 
 | Phase 0 ✅ | 生成"行号→file_id→来源类型→train/val/test归属"总账表，不碰图片/数值，先把数字算清楚 | `data/NistSdbsSplit/manifest.csv`（train 1659 / val 616 / test 617 / excluded 5611） |
 | Phase 1 ✅ | 实现 `build_dataset.py`：训练集重画图+算向量，验证/测试集直接拷贝；过程中发现并修复了SDBS图X轴分段线性的问题（见3.2.1节），NIST重绘图已按修复后的公式重新生成 | `data/NistSdbsSplit/{train,val,test}/`（train 2785样本=1659原始+1126增强） |
 | Phase 2 ✅（代码就绪，待在服务器上跑） | 给 `train.py` 加 `--dataset`/`--pretrained` 开关，新增 `NistSplitImageDataset` 读新数据集固定划分；跑方法1/2（4 backbone × 2 初始化 = 8次训练） | 8组 `results/{backbone}_{pretrained,scratch}/` |
-| Phase 3 | 实现 `train_fusion.py`（Raw+Image融合模型），先每种架构跑3层基线，视情况决定要不要跑7/9层 | 融合模型权重+指标 |
-| Phase 4 | Grad-CAM 按气味聚合脚本 + 图像/数值跨模态一致性对比脚本 | 聚合热力图、相关系数报告 |
+| Phase 3 ✅ | 实现 `train_fusion.py`（Raw+Image融合模型），4种架构的3层基线已跑完，视情况决定要不要跑7/9层 | 融合模型权重+指标 `results/fusion_{rnn,lstm,gru,transformer}_3layer/` |
+| Phase 4 ✅（代码就绪，待在服务器上跑） | Grad-CAM 按气味聚合脚本（`gradcam_aggregate.py`，5.1节，15/16模型已跑完）+ 图像/数值跨模态一致性对比脚本（`gradcam_numeric_consistency.py`，5.2节，刚写完还没跑） | 聚合热力图、相关系数报告 |
 | Phase 5 | 新旧划分方法对比分析 | 对比表 |
 | Phase 6 | `inference_demo.py` | 可运行的demo脚本 |
 | Phase 7（您跑完实验后再启动） | 汇总所有实验数据 + 画综合对比曲线 | 汇总报告 |
