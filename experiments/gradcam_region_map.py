@@ -3,10 +3,14 @@
 1D波数曲线，而是保留图像原始的二维结构，看模型判断某个气味标签时，光谱图上哪一片**区域**
 （不仅是哪个波数，还包括是曲线的峰顶/峰谷/基线附近）平均被关注。
 
-对每个标签，把 test 集里该标签全部正例样本的 Grad-CAM 热力图（224x224，和CNN实际输入分辨率
-一致）逐像素取平均，叠加在这些样本的平均光谱图背景上。和 gradcam_aggregate.py 的1D波数曲线是
-互补关系：那边告诉你"哪个波数重要"，这边告诉你"图像上哪个区域重要"（同一个波数在图像上对应
-一整条竖线，2D图能看出模型是主要看峰顶还是峰的其他部分）。
+对每个标签，把 test 集里该标签全部正例样本的 Grad-CAM 热力图逐像素取平均，叠加在这些样本的
+平均光谱图背景上。和 gradcam_aggregate.py 的1D波数曲线是互补关系：那边告诉你"哪个波数重要"，
+这边告诉你"图像上哪个区域重要"（同一个波数在图像上对应一整条竖线，2D图能看出模型是主要看峰顶
+还是峰的其他部分）。
+
+CNN 实际吃的是把686x322硬拉伸成224x224正方形的输入，Grad-CAM 算出来的热力图也是224x224的
+正方形。这里把热力图插值放大回标准化光谱图的原生686x322比例（TARGET_SIZE），叠加在未经方形
+裁剪/拉伸的原图上再保存——保证输出图和训练图长宽比例一致，不是被拉伸压扁过的版本。
 
 支持方法1/2的4个backbone（vgg16/resnet50/resnet101/vit_b，纯名=legacy，带_pretrained/
 _scratch后缀=nist_split）和方法3的4个融合模型（fusion_{rnn,lstm,gru,transformer}_{layers}
@@ -48,6 +52,7 @@ from gradcam_aggregate import (  # noqa: E402
     backbone_name_from_exp, load_legacy_rows, LEGACY_BACKBONES,
     parse_fusion_exp, ImageOnlyWrapper,
 )
+from standardize_spectra import TARGET_SIZE  # noqa: E402  (686, 322) = (W, H)，标准化光谱图的原生尺寸
 
 matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "sans-serif"]
 matplotlib.rcParams["axes.unicode_minus"] = False
@@ -132,17 +137,24 @@ def main():
             pos_rows = pos_rows.sample(n=args.max_samples_per_label, random_state=42)
         label_idx = LABEL_COLS.index(label)
 
-        cam_sum = np.zeros((img_size, img_size))
-        img_sum = np.zeros((img_size, img_size, 3))
+        cam_sum = np.zeros((TARGET_SIZE[1], TARGET_SIZE[0]))   # (H, W)
+        img_sum = np.zeros((TARGET_SIZE[1], TARGET_SIZE[0], 3))
         n = 0
         for _, row in pos_rows.iterrows():
             img_path = resolve_img_path(row)
             orig_img = Image.open(img_path).convert("RGB")
             x = transform(orig_img).unsqueeze(0).to(device)
-            cam, _prob = cam_engine(x, label_idx)  # [img_size, img_size], 单样本已归一化到0-1
+            cam, _prob = cam_engine(x, label_idx)  # [img_size, img_size]（方形，CNN输入分辨率），单样本已归一化到0-1
 
-            cam_sum += cam
-            img_sum += np.array(orig_img.resize((img_size, img_size))).astype(np.float32) / 255.0
+            # CNN 输入是把686x322硬拉伸成224x224正方形算出来的cam，直接当背景图叠加会把光谱图
+            # 压扁变形；这里把cam插值放大回原生686x322比例再叠加，背景图也用未经方形裁剪的原图，
+            # 保证输出图和训练图长宽比例、清晰度一致，不是被拉伸压缩过的版本
+            cam_native = np.array(
+                Image.fromarray((cam * 255).astype(np.uint8)).resize(TARGET_SIZE, Image.BILINEAR)
+            ).astype(np.float32) / 255.0
+
+            cam_sum += cam_native
+            img_sum += np.array(orig_img.resize(TARGET_SIZE)).astype(np.float32) / 255.0
             n += 1
 
         cam_avg = cam_sum / n
@@ -152,12 +164,13 @@ def main():
         img_avg = img_sum / n
         overlay = overlay_heatmap(img_avg, cam_avg)
 
-        fig, ax = plt.subplots(figsize=(6, 2.8))
-        ax.imshow(overlay)
+        # figsize按TARGET_SIZE的真实长宽比来，不用凑整数，避免matplotlib再引入一次拉伸变形
+        fig, ax = plt.subplots(figsize=(TARGET_SIZE[0] / 100, TARGET_SIZE[1] / 100 + 0.4))
+        ax.imshow(overlay, interpolation="nearest")
         ax.set_title(f"{label}  (n={n})", fontsize=11)
         ax.axis("off")
         fig.tight_layout()
-        fig.savefig(out_dir / f"{label}.png", dpi=150)
+        fig.savefig(out_dir / f"{label}.png", dpi=200)
         plt.close(fig)
 
         grid_entries.append((label, n, overlay))
@@ -171,7 +184,7 @@ def main():
         ax = axes[i // cols, i % cols]
         if i < len(grid_entries):
             label, n, overlay = grid_entries[i]
-            ax.imshow(overlay)
+            ax.imshow(overlay, interpolation="nearest")
             ax.set_title(f"{label} (n={n})", fontsize=8)
         ax.axis("off")
     fig.tight_layout()
