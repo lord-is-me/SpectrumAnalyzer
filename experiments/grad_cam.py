@@ -237,7 +237,7 @@ def main():
 
         fig, axes = plt.subplots(1, len(target_labels) + 1, figsize=(4 * (len(target_labels) + 1), 4 * TARGET_SIZE[1] / TARGET_SIZE[0]))
         axes[0].imshow(orig_img.resize(TARGET_SIZE), interpolation="nearest")
-        axes[0].set_title(f"file_id={file_id}\n原图")
+        axes[0].set_title(f"file_id={file_id}\noriginal")
         axes[0].axis("off")
 
         for ax, label_name in zip(axes[1:], target_labels):
