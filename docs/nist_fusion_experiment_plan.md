@@ -224,7 +224,7 @@ Fusion:          concat([image_emb, seq_emb]) → Linear → MultiLabelHead → 
 | Phase 2 ✅（代码就绪，待在服务器上跑） | 给 `train.py` 加 `--dataset`/`--pretrained` 开关，新增 `NistSplitImageDataset` 读新数据集固定划分；跑方法1/2（4 backbone × 2 初始化 = 8次训练） | 8组 `results/{backbone}_{pretrained,scratch}/` |
 | Phase 3 ✅ | 实现 `train_fusion.py`（Raw+Image融合模型），4种架构的3层基线已跑完，视情况决定要不要跑7/9层 | 融合模型权重+指标 `results/fusion_{rnn,lstm,gru,transformer}_3layer/` |
 | Phase 4 ✅（代码就绪，待在服务器上跑） | Grad-CAM 按气味聚合脚本（`gradcam_aggregate.py`，5.1节，15/16模型已跑完）+ 图像/数值跨模态一致性对比脚本（`gradcam_numeric_consistency.py`，5.2节，刚写完还没跑） | 聚合热力图、相关系数报告 |
-| Phase 5 | 新旧划分方法对比分析 | 对比表 |
+| Phase 5 ✅（初版分析，见 [docs/phase5_split_comparison.md](phase5_split_comparison.md)） | 新旧划分方法对比分析：4个backbone（预训练初始化）新旧划分Test F1/AUC对比，假说只部分成立（resnet50/101符合，vgg16相反，vit_b不明显） | 对比表+图 `experiments/results/phase5_split_comparison.{csv,png}` |
 | Phase 6 | `inference_demo.py` | 可运行的demo脚本 |
 | Phase 7（您跑完实验后再启动） | 汇总所有实验数据 + 画综合对比曲线 | 汇总报告 |
 
