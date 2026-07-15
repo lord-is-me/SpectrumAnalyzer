@@ -26,61 +26,30 @@ Phase 4 (5.1)：按气味标签聚合 Grad-CAM 热力图，找每个气味标签
 （行=360个波数bin，列=每个达标的气味标签）。
 """
 import argparse
-import re
 import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from PIL import Image
-from sklearn.model_selection import train_test_split
 
 import torch
-import torch.nn as nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from standardize_spectra import pixel_to_wavenumber, TARGET_SIZE  # noqa: E402
 
 from train import (  # noqa: E402
     build_model, get_transforms, LABEL_COLS, NUM_LABELS,
-    NIST_SPLIT_ROOT, CHECKPOINT_ROOT, RESULT_ROOT, CSV_PATH, IMG_DIR,
+    NIST_SPLIT_ROOT, CHECKPOINT_ROOT, RESULT_ROOT, IMG_DIR,
 )
 from grad_cam import GradCAM, get_target_layer, disable_inplace_relu  # noqa: E402
 from fusion_model import FusionModel  # noqa: E402
+from gradcam_common import (  # noqa: E402
+    LEGACY_BACKBONES, backbone_name_from_exp, parse_fusion_exp, load_legacy_rows, ImageOnlyWrapper,
+)
 
 N_BINS = 360
 WN_LOW, WN_HIGH = 400.0, 4000.0
-LEGACY_BACKBONES = ("vgg16", "resnet50", "resnet101", "vit_b")
-FUSION_RE = re.compile(r"^fusion_(rnn|lstm|gru|transformer)_(\d+)layer$")
-
-
-def backbone_name_from_exp(exp_name: str) -> str:
-    """"resnet101_pretrained" -> "resnet101"，"vgg16" -> "vgg16"（legacy实验没有后缀）。"""
-    for bb in ("resnet101", "resnet50", "vgg16", "vit_b"):
-        if exp_name.startswith(bb):
-            return bb
-    raise ValueError(f"无法从实验名解析backbone: {exp_name}")
-
-
-def parse_fusion_exp(exp_name: str):
-    """"fusion_transformer_3layer" -> ("transformer", 3)，不是融合实验名就返回 None。"""
-    m = FUSION_RE.match(exp_name)
-    return (m.group(1), int(m.group(2))) if m else None
-
-
-class ImageOnlyWrapper(nn.Module):
-    """Grad-CAM 只分析融合模型的图像分支：包成单参数(image)的forward，数值分支喂
-    "全掩码=0"的占位输入——和val/test实际评估时的输入完全一致（它们没有真实数值向量）。"""
-    def __init__(self, fusion_model: FusionModel, n_bins: int = N_BINS):
-        super().__init__()
-        self.fusion_model = fusion_model
-        self.n_bins = n_bins
-
-    def forward(self, image):
-        b = image.shape[0]
-        values = torch.full((b, self.n_bins), 100.0, device=image.device)
-        mask = torch.zeros((b, self.n_bins), device=image.device)
-        return self.fusion_model(image, values, mask)
 
 
 def resample_cam_to_wavenumber(cam: np.ndarray, bin_centers: np.ndarray) -> np.ndarray:
@@ -91,21 +60,6 @@ def resample_cam_to_wavenumber(cam: np.ndarray, bin_centers: np.ndarray) -> np.n
     wn = pixel_to_wavenumber(px_686, TARGET_SIZE[0])  # 随 px_686 递增而递减
     # np.interp 要求 x 递增，wn是递减的，两边一起倒序
     return np.interp(bin_centers, wn[::-1], col_importance[::-1])
-
-
-def load_legacy_rows(split: str) -> pd.DataFrame:
-    """复现 train.py::prepare_legacy_datasets 里那个固定 random_state=42 的
-    60/20/20 划分，取出 val 或 test 对应的那部分行（file_id + 118个标签列）。"""
-    df_all = pd.read_csv(CSV_PATH)
-    df_spec = df_all[df_all["spectrum_type"] == 1].copy()
-    df_spec["file_id"] = df_spec.index + 2
-    df_spec = df_spec.reset_index(drop=True)
-
-    all_idx = list(range(len(df_spec)))
-    tmp_idx, test_idx = train_test_split(all_idx, test_size=0.2, random_state=42)
-    train_idx, val_idx = train_test_split(tmp_idx, test_size=0.25, random_state=42)
-    idx = val_idx if split == "val" else test_idx
-    return df_spec.iloc[idx].reset_index(drop=True)
 
 
 def main():

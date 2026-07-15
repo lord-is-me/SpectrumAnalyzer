@@ -45,8 +45,9 @@ from train import (  # noqa: E402
 )
 from grad_cam import GradCAM, disable_inplace_relu  # noqa: E402
 from fusion_model import FusionModel  # noqa: E402
+from gradcam_common import parse_fusion_exp  # noqa: E402
 from gradcam_aggregate import (  # noqa: E402
-    N_BINS, WN_LOW, WN_HIGH, parse_fusion_exp, resample_cam_to_wavenumber,
+    N_BINS, WN_LOW, WN_HIGH, resample_cam_to_wavenumber,
 )
 
 BASELINE_VALUE = 100.0  # 和 build_dataset.py::build_vector 里"无覆盖bin"的填充值同源

@@ -48,7 +48,7 @@ from train import (  # noqa: E402
 )
 from grad_cam import GradCAM, get_target_layer, disable_inplace_relu  # noqa: E402
 from fusion_model import FusionModel  # noqa: E402
-from gradcam_aggregate import (  # noqa: E402
+from gradcam_common import (  # noqa: E402
     backbone_name_from_exp, load_legacy_rows, LEGACY_BACKBONES,
     parse_fusion_exp, ImageOnlyWrapper,
 )
