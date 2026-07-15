@@ -8,13 +8,15 @@
 互补关系：那边告诉你"哪个波数重要"，这边告诉你"图像上哪个区域重要"（同一个波数在图像上对应
 一整条竖线，2D图能看出模型是主要看峰顶还是峰的其他部分）。
 
-只支持方法1/2的4个backbone（vgg16/resnet50/resnet101/vit_b，纯名或带_pretrained/_scratch
-后缀），--exp/--dataset 的解析规则和 gradcam_aggregate.py 完全一致。不支持方法3融合模型
-（如果需要可以仿照 gradcam_aggregate.py 里 ImageOnlyWrapper 的做法再加）。
+支持方法1/2的4个backbone（vgg16/resnet50/resnet101/vit_b，纯名=legacy，带_pretrained/
+_scratch后缀=nist_split）和方法3的4个融合模型（fusion_{rnn,lstm,gru,transformer}_{layers}
+layer，只分析图像分支，数值分支喂占位输入，和 gradcam_aggregate.py 的规则完全一致，直接
+复用它的 ImageOnlyWrapper/parse_fusion_exp/backbone_name_from_exp/load_legacy_rows）。
 
 用法:
     python gradcam_region_map.py --exp resnet101_pretrained --min_pos 10   # nist_split
     python gradcam_region_map.py --exp resnet101 --min_pos 10             # legacy
+    python gradcam_region_map.py --exp fusion_transformer_3layer --min_pos 10  # 方法3融合模型
 
 结果保存在 results/{exp}/gradcam_region_map/
     {label}.png    每个达标标签一张：该标签正例样本的平均Grad-CAM热力图，叠加在平均光谱图背景上
@@ -41,7 +43,11 @@ from train import (  # noqa: E402
     NIST_SPLIT_ROOT, CHECKPOINT_ROOT, RESULT_ROOT, IMG_DIR,
 )
 from grad_cam import GradCAM, get_target_layer, disable_inplace_relu  # noqa: E402
-from gradcam_aggregate import backbone_name_from_exp, load_legacy_rows, LEGACY_BACKBONES  # noqa: E402
+from fusion_model import FusionModel  # noqa: E402
+from gradcam_aggregate import (  # noqa: E402
+    backbone_name_from_exp, load_legacy_rows, LEGACY_BACKBONES,
+    parse_fusion_exp, ImageOnlyWrapper,
+)
 
 matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "sans-serif"]
 matplotlib.rcParams["axes.unicode_minus"] = False
@@ -67,15 +73,32 @@ def main():
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    backbone = backbone_name_from_exp(args.exp)
-    is_legacy = args.dataset == "legacy" or (args.dataset == "auto" and args.exp in LEGACY_BACKBONES)
-
     ckpt_path = CHECKPOINT_ROOT / args.exp / "best.pth"
-    model, img_size = build_model(backbone, NUM_LABELS, pretrained=False)  # 权重马上被checkpoint整个覆盖
-    model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=True))
-    model = model.to(device).eval()
-    disable_inplace_relu(model)
-    target_layer, reshape_transform = get_target_layer(model, backbone)
+
+    fusion_info = parse_fusion_exp(args.exp)
+    if fusion_info is not None:
+        seq_arch, num_layers = fusion_info
+        print(f"模型类型: 方法3融合模型 (seq_model={seq_arch}, num_layers={num_layers})，只分析图像分支")
+        fusion_model = FusionModel(NUM_LABELS, seq_arch=seq_arch, seq_layers=num_layers, image_pretrained=False)
+        fusion_model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=True))
+        model = ImageOnlyWrapper(fusion_model).to(device).eval()
+        disable_inplace_relu(model)
+        if seq_arch in ("rnn", "lstm", "gru"):
+            # cuDNN的RNN/LSTM/GRU反向传播要求模块处于training模式，见 gradcam_aggregate.py 同名注释
+            model.fusion_model.seq_encoder.encoder.train()
+        img_size = 224
+        target_layer = model.fusion_model.image_encoder.features[-2][-1]
+        reshape_transform = None
+        is_legacy = False
+    else:
+        backbone = backbone_name_from_exp(args.exp)
+        is_legacy = args.dataset == "legacy" or (args.dataset == "auto" and args.exp in LEGACY_BACKBONES)
+        model, img_size = build_model(backbone, NUM_LABELS, pretrained=False)  # 权重马上被checkpoint整个覆盖
+        model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=True))
+        model = model.to(device).eval()
+        disable_inplace_relu(model)
+        target_layer, reshape_transform = get_target_layer(model, backbone)
+
     cam_engine = GradCAM(model, target_layer, reshape_transform)
 
     if is_legacy:
